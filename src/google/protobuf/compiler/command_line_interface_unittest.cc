@@ -3656,6 +3656,166 @@ TEST_F(CommandLineInterfaceTest,
 }
 #endif  // !_WIN32
 
+// -------------------------------------------------------------------
+// Additional tests for dependency manifest escaping and Windows path handling
+// introduced in GenerateDependencyManifestFile.
+// These are minimal but cover key behaviors without changing existing tests.
+
+namespace {
+
+// Mirrors production escaping logic for expectations:
+//  - On Windows, normalize '\\' to '/'
+//  - Escape space, tab, '#', ':' with a preceding '\\'
+//  - Double '$' to '$$'
+static std::string MakefileEscapeForTest(std::string path) {
+#if defined(_WIN32)
+  for (char& ch : path) {
+    if (ch == '\\') ch = '/';
+  }
+#endif
+  std::string out;
+  out.reserve(path.size() * 2);
+  for (char ch : path) {
+    switch (ch) {
+      case ' ':
+      case '\t':
+      case '#':
+      case ':':
+        out.push_back('\\');
+        out.push_back(ch);
+        break;
+      case '$':
+        out.push_back('$');
+        out.push_back('$');
+        break;
+      default:
+        out.push_back(ch);
+    }
+  }
+  return out;
+}
+
+// Build expected single-target depfile content: "target: dep1 \\\n+//  dep2" (no trailing newline), matching production format.
+static std::string BuildExpectedManifest(const std::string& target_abs,
+                                         const std::string& dep1_abs,
+                                         const std::string& dep2_abs) {
+  const std::string t = MakefileEscapeForTest(target_abs);
+  const std::string d1 = MakefileEscapeForTest(dep1_abs);
+  const std::string d2 = MakefileEscapeForTest(dep2_abs);
+  return absl::StrCat(t, ": ", d1, "\\\n ", d2);
+}
+
+}  // namespace
+
+TEST_F(CommandLineInterfaceTest, DependencyManifest_Escapes_SpaceHashDollar) {
+  // Place special characters in imported file path (not in argv) to avoid
+  // command-line tokenization pitfalls.
+  const std::string special_dir = "dir with space #hash wsl$";
+  const std::string imported_rel = absl::StrCat(special_dir, "/dep.proto");
+
+  CreateTempFile(imported_rel,
+                 "syntax = \"proto2\";\n"
+                 "message Dep {}\n");
+  CreateTempFile("bar.proto",
+                 absl::StrCat("syntax = \"proto2\";\n",
+                              "import \"", imported_rel, "\";\n",
+                              "message Bar { optional Dep d = 1; }\n"));
+
+  Run(absl::StrCat("protocol_compiler --dependency_out=$tmpdir/manifest ",
+                   "--test_out=$tmpdir --proto_path=$tmpdir bar.proto"));
+
+  ExpectNoErrors();
+
+  const std::string manifest = ReadFile("manifest");
+
+  const std::string target_abs =
+      absl::StrCat(temp_directory(), "/bar.proto.MockCodeGenerator.test_generator");
+  const std::string dep1_abs =
+      absl::StrCat(temp_directory(), "/", imported_rel);
+  const std::string dep2_abs =
+      absl::StrCat(temp_directory(), "/bar.proto");
+
+  const std::string expected =
+      BuildExpectedManifest(target_abs, dep1_abs, dep2_abs);
+  EXPECT_EQ(manifest, expected);
+}
+
+#ifndef _WIN32
+TEST_F(CommandLineInterfaceTest, DependencyManifest_Escapes_Colon_OnPosix) {
+  const std::string dir_with_colon = "dir:with:colon";
+  const std::string imported_rel = absl::StrCat(dir_with_colon, "/dep.proto");
+
+  CreateTempFile(imported_rel,
+                 "syntax = \"proto2\";\n"
+                 "message Dep {}\n");
+  CreateTempFile("bar.proto",
+                 absl::StrCat("syntax = \"proto2\";\n",
+                              "import \"", imported_rel, "\";\n",
+                              "message Bar { optional Dep d = 1; }\n"));
+
+  Run(absl::StrCat("protocol_compiler --dependency_out=$tmpdir/manifest ",
+                   "--test_out=$tmpdir --proto_path=$tmpdir bar.proto"));
+
+  ExpectNoErrors();
+
+  const std::string manifest = ReadFile("manifest");
+  const std::string target_abs =
+      absl::StrCat(temp_directory(), "/bar.proto.MockCodeGenerator.test_generator");
+  const std::string dep1_abs =
+      absl::StrCat(temp_directory(), "/", imported_rel);
+  const std::string dep2_abs =
+      absl::StrCat(temp_directory(), "/bar.proto");
+
+  const std::string expected =
+      BuildExpectedManifest(target_abs, dep1_abs, dep2_abs);
+  EXPECT_EQ(manifest, expected);
+
+  const std::string escaped_with_colon = MakefileEscapeForTest(dep1_abs);
+  EXPECT_THAT(manifest, ::testing::HasSubstr(escaped_with_colon));
+}
+#endif  // !_WIN32
+
+TEST_F(CommandLineInterfaceTest, DependencyManifest_Escapes_Target_DescriptorSetOut) {
+  CreateTempFile("foo.proto",
+                 "syntax = \"proto2\";\n"
+                 "message Foo {}\n");
+  CreateTempFile("bar.proto",
+                 "syntax = \"proto2\";\n"
+                 "import \"foo.proto\";\n"
+                 "message Bar { optional Foo f = 1; }\n");
+
+  const std::string descriptor_out_rel = "out file$set.pb";
+  const std::string descriptor_out_abs =
+      absl::StrCat(temp_directory(), "/", descriptor_out_rel);
+
+  std::vector<std::string> args = {
+      "protocol_compiler",
+      absl::StrCat("--dependency_out=", temp_directory(), "/manifest"),
+      absl::StrCat("--descriptor_set_out=", descriptor_out_abs),
+      absl::StrCat("--proto_path=", temp_directory()),
+      "bar.proto",
+  };
+
+  RunWithArgs(std::move(args));
+  ExpectNoErrors();
+
+  const std::string manifest = ReadFile("manifest");
+
+  const std::string target_abs = descriptor_out_abs;
+  const std::string dep1_abs =
+      absl::StrCat(temp_directory(), "/foo.proto");
+  const std::string dep2_abs =
+      absl::StrCat(temp_directory(), "/bar.proto");
+
+  const std::string expected =
+      BuildExpectedManifest(target_abs, dep1_abs, dep2_abs);
+
+  EXPECT_EQ(manifest, expected);
+
+  const std::string escaped_target = MakefileEscapeForTest(target_abs);
+  EXPECT_THAT(manifest, ::testing::HasSubstr(escaped_target));
+}
+
 TEST_F(CommandLineInterfaceTest, TestArgumentFile) {
   // Test parsing multiple input files using an argument file.
 
