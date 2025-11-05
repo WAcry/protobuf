@@ -581,12 +581,53 @@ TEST_F(IoWin32Test, AsWindowsPathTest) {
   // do too. Neither can be converted to a drive-specifying absolute Windows
   // path.
   ASSERT_EQ(testonly_utf8_to_winpath("/absolute/unix/path"), L"");
-  // Though valid on Windows, we also don't support UNC paths (\\UNC\\blah).
+  // Driveless absolute Windows paths (like "\foo\bar") are not supported.
+  // Note: true UNC paths ("\\\\server\\share\\...") ARE supported by as_windows_path.
   ASSERT_EQ(testonly_utf8_to_winpath("\\driveless\\absolute"), L"");
   // Though valid in cmd.exe, drive-relative paths are not supported.
   ASSERT_EQ(testonly_utf8_to_winpath("c:foo"), L"");
   ASSERT_EQ(testonly_utf8_to_winpath("c:/foo"), L"\\\\?\\c:\\foo");
   ASSERT_EQ(testonly_utf8_to_winpath("\\\\?\\C:\\foo"), L"\\\\?\\C:\\foo");
+}
+
+TEST_F(IoWin32Test, AsWindowsPathSupportsUNCBasic) {
+  // Pure UNC path should be accepted and converted to \\?\UNC\server\share\...
+  const char* unc_utf8 = "\\\\server\\share\\foo\\bar";
+  std::wstring expected = L"\\\\?\\UNC\\server\\share\\foo\\bar";
+  ASSERT_EQ(testonly_utf8_to_winpath(unc_utf8), expected);
+}
+
+namespace {
+// Normalize a UNC path using WinAPI, mirroring production code behavior.
+static std::wstring CanonicalizeUnc(const std::wstring& in) {
+  DWORD need = ::GetFullPathNameW(in.c_str(), 0, nullptr, nullptr);
+  if (need == 0) return in;
+  std::unique_ptr<WCHAR[]> buf(new WCHAR[need]);
+  DWORD written = ::GetFullPathNameW(in.c_str(), need, buf.get(), nullptr);
+  if (written == 0 || written >= need) return in;
+  return std::wstring(buf.get());
+}
+}
+
+TEST_F(IoWin32Test, AsWindowsPathUNCDotAndDotDotAreNormalized) {
+  // Ensure '.' and '..' segments are normalized for UNC and that the
+  // resulting path retains the UNC prefix when expanded with the long-path
+  // prefix.
+  std::wstring w_unc_in = L"\\\\server\\share\\a\\.\\b\\..\\c\\";
+  std::wstring w_unc_norm = CanonicalizeUnc(w_unc_in);
+  ASSERT_FALSE(w_unc_norm.empty());
+  // Build expected: \\?\UNC\ + normalized path without the initial two backslashes
+  std::wstring expected = L"\\\\?\\UNC\\" + w_unc_norm.substr(2);
+
+  std::string unc_utf8;
+  ASSERT_TRUE(strings::wcs_to_utf8(w_unc_in.c_str(), &unc_utf8));
+  ASSERT_EQ(testonly_utf8_to_winpath(unc_utf8.c_str()), expected);
+}
+
+TEST_F(IoWin32Test, AsWindowsPathRejectsDevicePaths) {
+  // Device paths (e.g. \\.\ prefix) are not UNC and should be rejected.
+  ASSERT_EQ(testonly_utf8_to_winpath("\\\\.\\C:\\Windows"), L"");
+  ASSERT_EQ(testonly_utf8_to_winpath("\\\\.\\NUL"), L"");
 }
 
 TEST_F(IoWin32Test, Utf8Utf16ConversionTest) {
