@@ -3708,10 +3708,10 @@ static std::string BuildExpectedManifest(const std::string& target_abs,
 }  // namespace
 
 TEST_F(CommandLineInterfaceTest, DependencyManifest_Escapes_SpaceHashDollar) {
-  // Place special characters in imported file path (not in argv) to avoid
-  // command-line tokenization pitfalls.
-  const std::string special_dir = "dir with space #hash wsl$";
-  const std::string imported_rel = absl::StrCat(special_dir, "/dep.proto");
+  // Use a per-test subtree. Keep '$' in the FILE name (not directory)
+  // to avoid platform quirks of "$"-suffixed dirs.
+  const std::string special_dir = "ws_escape1/dir with space #hash";
+  const std::string imported_rel = absl::StrCat(special_dir, "/dep$.proto");
 
   CreateTempFile(imported_rel,
                  "syntax = \"proto2\";\n"
@@ -3725,6 +3725,8 @@ TEST_F(CommandLineInterfaceTest, DependencyManifest_Escapes_SpaceHashDollar) {
                    "--test_out=$tmpdir --proto_path=$tmpdir bar.proto"));
 
   ExpectNoErrors();
+
+  
 
   const std::string manifest = ReadFile("manifest");
 
@@ -3742,7 +3744,7 @@ TEST_F(CommandLineInterfaceTest, DependencyManifest_Escapes_SpaceHashDollar) {
 
 #ifndef _WIN32
 TEST_F(CommandLineInterfaceTest, DependencyManifest_Escapes_Colon_OnPosix) {
-  const std::string dir_with_colon = "dir:with:colon";
+  const std::string dir_with_colon = "ws_escape2/dir:with:colon";
   const std::string imported_rel = absl::StrCat(dir_with_colon, "/dep.proto");
 
   CreateTempFile(imported_rel,
@@ -3757,6 +3759,8 @@ TEST_F(CommandLineInterfaceTest, DependencyManifest_Escapes_Colon_OnPosix) {
                    "--test_out=$tmpdir --proto_path=$tmpdir bar.proto"));
 
   ExpectNoErrors();
+
+  
 
   const std::string manifest = ReadFile("manifest");
   const std::string target_abs =
@@ -3784,7 +3788,8 @@ TEST_F(CommandLineInterfaceTest, DependencyManifest_Escapes_Target_DescriptorSet
                  "import \"foo.proto\";\n"
                  "message Bar { optional Foo f = 1; }\n");
 
-  const std::string descriptor_out_rel = "out file set.pb";
+  // Keep space + '$' on TARGET side to validate escaping; avoid special dirs.
+  const std::string descriptor_out_rel = "out file$set.pb";
   const std::string descriptor_out_abs =
       absl::StrCat(temp_directory(), "/", descriptor_out_rel);
 
@@ -3798,6 +3803,8 @@ TEST_F(CommandLineInterfaceTest, DependencyManifest_Escapes_Target_DescriptorSet
 
   RunWithArgs(std::move(args));
   ExpectNoErrors();
+
+  
 
   const std::string manifest = ReadFile("manifest");
 

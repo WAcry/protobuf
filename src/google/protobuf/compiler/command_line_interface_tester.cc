@@ -38,16 +38,39 @@ bool FileExists(const std::string& path) {
 }  // namespace
 
 CommandLineInterfaceTester::CommandLineInterfaceTester() {
-  temp_directory_ = absl::StrCat(TestTempDir(), "/proto2_cli_test_temp");
+  // Use a unique per-test subdirectory to avoid cross-test interference
+  // and Windows timing issues around directory deletion.
+  const ::testing::TestInfo* ti = ::testing::UnitTest::GetInstance()->current_test_info();
+  auto sanitize = [](absl::string_view s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+      if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+          (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '/') {
+        out.push_back(c);
+      } else {
+        out.push_back('_');
+      }
+    }
+    return out;
+  };
 
-  // If the temp directory already exists, it must be left over from a
-  // previous run.  Delete it.
+  std::string suffix = "unknown";
+  if (ti != nullptr) {
+    suffix = absl::StrCat(sanitize(ti->test_suite_name()), "/", sanitize(ti->name()));
+  }
+
+  temp_directory_ = absl::StrCat(TestTempDir(), "/proto2_cli_test_temp/", suffix);
+
+  // If the temp directory already exists, delete it.
   if (FileExists(temp_directory_)) {
     File::DeleteRecursively(temp_directory_, NULL, NULL);
   }
 
-  // Create the temp directory.
-  ABSL_CHECK_OK(File::CreateDir(temp_directory_, 0777));
+  // Create the temp directory tree (parents included).
+  absl::Status s = File::RecursivelyCreateDir(temp_directory_, 0777);
+  ABSL_CHECK(s.ok() || absl::IsAlreadyExists(s))
+      << "Failed to create temp test directory: " << temp_directory_;
 }
 
 CommandLineInterfaceTester::~CommandLineInterfaceTester() {
